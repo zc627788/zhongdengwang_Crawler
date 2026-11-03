@@ -1,0 +1,24 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Sensitive user credentials, active tokens & runtime state (NEVER COMMIT)
+config/account.json
+config/session.json
+config/login_pending.json
+config/task_checkpoint.json
+config/targets.txt
+config/headers.json
+config/*.png
+config/_selftest_*.json
+
+# Collected registration data & PDF ZIP archives
+output/
+
+# PyInstaller build artifacts & binaries
+build/
+dist/
+*.spec
