@@ -29,24 +29,41 @@ def main():
         "-m",
         "PyInstaller",
         "--noconfirm",
-        "--clean",
+        "--noupx",
         "--windowed",
         "--name",
         "ZhongdengCrawler",
         "--onefile" if args.onefile else "--onedir",
-        "--collect-all",
+        "--collect-data",
         "ddddocr",
-        "--collect-all",
+        "--collect-data",
+        "certifi",
+        "--collect-binaries",
         "onnxruntime",
-        "--collect-all",
+        "--collect-data",
+        "onnxruntime",
+        "--collect-binaries",
+        "curl_cffi",
+        "--collect-data",
         "curl_cffi",
         "--hidden-import",
         "PIL._tkinter_finder",
+        "--hidden-import",
+        "onnxruntime.capi._pybind_state",
+        "--exclude-module",
+        "pytest",
+        "--exclude-module",
+        "matplotlib",
+        "--exclude-module",
+        "pandas",
+        "--exclude-module",
+        "scipy",
+        "--exclude-module",
+        "torch",
         str(PROJECT_ROOT / "gui_app.py"),
     ]
 
-    print("🚀 正在调用 PyInstaller 构建 ZhongdengCrawler.exe ...")
-    print("   命令:", " ".join(cmd))
+    print("🚀 正在调用 PyInstaller 快速构建 ZhongdengCrawler.exe ...", flush=True)
     subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
 
     target_dir = (PROJECT_ROOT / "dist") if args.onefile else (PROJECT_ROOT / "dist" / "ZhongdengCrawler")
@@ -60,9 +77,9 @@ def main():
             shutil.copy2(src, cfg_out / fname)
 
     exe_path = target_dir / "ZhongdengCrawler.exe"
-    print("\n" + "═" * 64)
-    print(f"✅ 打包成功！可执行文件路径:\n   {exe_path}")
-    print("═" * 64)
+    print("\n" + "═" * 64, flush=True)
+    print(f"✅ 打包成功！可执行文件路径:\n   {exe_path}", flush=True)
+    print("═" * 64, flush=True)
 
 
 if __name__ == "__main__":
