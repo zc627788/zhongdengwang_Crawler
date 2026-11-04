@@ -131,16 +131,19 @@ python gui_app.py
    python query_guarantor.py --file config/targets.txt --force
    ```
 
-### 四、一键打包独立 Windows `.exe`
+### 四、一键打包独立 Windows `.exe` 与免安装分发压缩包
 
-如需在无 Python 环境的 Windows 电脑上分发使用，安装 `pyinstaller` 后执行内置构建脚本：
+如需在无 Python 环境的 Windows 电脑上分发给他人使用，安装 `pyinstaller` 后执行内置构建脚本：
 
 ```bash
 pip install pyinstaller
 python build_exe.py
 ```
 
-打包完成后直接运行 `dist/ZhongdengCrawler/ZhongdengCrawler.exe` 即可（`config/` 与 `output/` 会自动生成在 `.exe` 同级目录，确保登录会话与任务断点跨重启持久保留）。
+脚本会自动完成三件事：
+1. 编译高速目录版客户端 `dist/ZhongdengCrawler/ZhongdengCrawler.exe`（携带 `_internal/` 独立运行库，双击秒开）。
+2. 自动清洗配置目录，写入空白 `config/account.json` 与 `使用说明.txt`，确保绝不泄露构建者个人账密或会话。
+3. 自动将整个目录压缩打包为 **`dist/ZhongdengCrawler_Windows_x64.zip`** —— 直接将该 `.zip` 发给他人，对方完整解压后双击 `ZhongdengCrawler.exe` 即可使用（切勿单独抽离 `.exe` 离开 `_internal` 目录）。
 
 ---
 
