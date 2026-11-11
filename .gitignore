@@ -15,8 +15,9 @@ config/headers.json
 config/*.png
 config/_selftest_*.json
 
-# Collected registration data & PDF ZIP archives
+# Collected registration data, runtime logs & PDF ZIP archives
 output/
+logs/
 
 # PyInstaller build artifacts & binaries
 build/

@@ -47,17 +47,18 @@ USER_GUIDE_TXT = """============================================================
 
 
 def sanitize_and_prepare_release_dir(target_dir: Path):
-    """确保分发目录绝不包含任何个人账密、历史登录态或采集数据"""
+    """确保分发目录绝不包含任何个人账密、历史登录态、运行日志或采集数据"""
     cfg_out = target_dir / "config"
     out_dir = target_dir / "output"
+    log_dir = target_dir / "logs"
 
-    if cfg_out.exists():
-        shutil.rmtree(cfg_out)
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
+    for d in (cfg_out, out_dir, log_dir):
+        if d.exists():
+            shutil.rmtree(d)
 
     cfg_out.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # 写入空白账号配置，绝不携带构建者个人账密
     (cfg_out / "account.json").write_text(
@@ -95,6 +96,7 @@ def create_release_zip(folder_to_zip: Path, zip_save_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="使用 PyInstaller 打包 ZhongdengCrawler 桌面客户端与分发压缩包")
     parser.add_argument("--onefile", action="store_true", help="打包为单个独立 .exe 文件（默认为秒开的 onedir 目录模式）")
+    parser.add_argument("--zip", action="store_true", help="构建完成后同时生成 .zip 分发压缩包（默认不自动打包 zip）")
     parser.add_argument("--zip-only", action="store_true", help="跳过重新编译，直接脱敏清理现有 dist/ZhongdengCrawler 并重新生成 .zip")
     args = parser.parse_args()
 
@@ -147,15 +149,18 @@ def main():
 
     sanitize_and_prepare_release_dir(target_dir)
 
-    if not args.onefile:
+    should_zip = (args.zip or args.zip_only) and (not args.onefile)
+    if should_zip:
         zip_path = PROJECT_ROOT / "dist" / "ZhongdengCrawler_Windows_x64.zip"
         create_release_zip(target_dir, zip_path)
 
     print("\n" + "═" * 68, flush=True)
     print(f"✅ 构建与隐私清理完成！", flush=True)
     print(f"   • 本地可执行文件: {exe_path}", flush=True)
-    if not args.onefile:
+    if should_zip:
         print(f"   • 对外分发压缩包: {PROJECT_ROOT / 'dist' / 'ZhongdengCrawler_Windows_x64.zip'}", flush=True)
+    else:
+        print("   • 提示: 未生成 .zip 压缩包（如需生成请显式传入 --zip 或 --zip-only）", flush=True)
     print("═" * 68, flush=True)
 
 

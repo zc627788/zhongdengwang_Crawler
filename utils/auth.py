@@ -58,25 +58,63 @@ class ZhongdengAuthClient:
             )
         self.session.headers.update(default_headers)
         self.solver = CaptchaSolver()
+        self.log_dir = self.config_dir.parent / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def _log(self, msg: str):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_file = self.log_dir / f"zhongdeng_{time.strftime('%Y%m%d')}.log"
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {msg.lstrip()}\n")
+        except Exception:
+            pass
         if self._logger:
             self._logger(msg)
         else:
-            print(msg)
+            print(msg, flush=True)
+
+    def reset_connection_pool(self):
+        """重建底层 curl_cffi Session 连接池（保留当前 headers 与 cookies），彻底消除长耗时下载后的半开死连接 (curl 56)"""
+        old_headers = dict(self.session.headers)
+        old_cookies = dict(self.session.cookies)
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        self.session = cffi_requests.Session(impersonate="chrome120")
+        self.session.headers.update(old_headers)
+        for k, v in old_cookies.items():
+            self.session.cookies.set(k, v)
+
+    def _request_json(self, method: str, path: str, max_retries: int = 3, **kwargs) -> dict:
+        """带瞬态断连 (curl 56 / Connection reset / Timeout) 自动重连重试的 JSON 请求封装"""
+        url = path if path.startswith("http") else f"{BASE_URL}{path}"
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = self.session.request(method, url, **kwargs)
+                return resp.json()
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    self.reset_connection_pool()
+                    time.sleep(0.8 * attempt)
+                else:
+                    raise last_exc
 
     def check_session_valid(self, access_token: str) -> Tuple[bool, Optional[dict]]:
         """调用 /out/ SPA 的当前登录用户信息接口验证 accessToken 是否有效"""
         if not access_token:
             return False, None
         try:
-            resp = self.session.post(
-                f"{BASE_URL}/api/user/subsidiary/userLoginInfo",
+            data = self._request_json(
+                "POST",
+                "/api/user/subsidiary/userLoginInfo",
                 json={},
                 headers={"accessToken": access_token},
                 timeout=15,
             )
-            data = resp.json()
             if data.get("success"):
                 return True, data.get("data")
             return False, data
@@ -126,23 +164,23 @@ class ZhongdengAuthClient:
         return payload
 
     def _get_login_token(self) -> str:
-        resp = self.session.post(
-            f"{BASE_URL}/api/user/tool/token",
+        res = self._request_json(
+            "POST",
+            "/api/user/tool/token",
             json={"type": "4"},
             timeout=15,
         )
-        res = resp.json()
         if not res.get("success") or not res.get("data", {}).get("token"):
             raise RuntimeError(f"获取 loginToken 失败: {res}")
         return res["data"]["token"]
 
     def _fetch_verify_code(self, login_token: str) -> Tuple[bytes, str]:
-        resp = self.session.post(
-            f"{BASE_URL}/api/user/tool/verifyCode",
+        res = self._request_json(
+            "POST",
+            "/api/user/tool/verifyCode",
             data={"type": "4", "token": login_token},
             timeout=15,
         )
-        res = resp.json()
         if not res.get("success") or not res.get("data", {}).get("url"):
             raise RuntimeError(f"获取图形校验码失败: {res}")
         data_uri = res["data"]["url"]
@@ -202,12 +240,12 @@ class ZhongdengAuthClient:
                 "userCode": username,
                 "verifyCode": verify_code,
             }
-            resp = self.session.post(
-                f"{BASE_URL}/api/user/loginController/loginCheck",
+            res = self._request_json(
+                "POST",
+                "/api/user/loginController/loginCheck",
                 json=payload,
                 timeout=15,
             )
-            res = resp.json()
 
             if res.get("success"):
                 check_data = res.get("data") or {}
@@ -250,11 +288,12 @@ class ZhongdengAuthClient:
             "validataCode": verified_code,
             "verifyType": "4",
         }
-        send_resp = self.session.post(
-            f"{BASE_URL}/api/user/tool/sendDynamicCode",
+        send_resp = self._request_json(
+            "POST",
+            "/api/user/tool/sendDynamicCode",
             json=send_payload,
             timeout=15,
-        ).json()
+        )
         if not send_resp.get("success"):
             raise RuntimeError(f"发送短信动态码失败: {send_resp.get('msg', send_resp)}")
 
@@ -295,11 +334,12 @@ class ZhongdengAuthClient:
             "userCode": pending["username"],
             "verifyCode": pending["verifyCode"],
         }
-        final_resp = self.session.post(
-            f"{BASE_URL}/api/user/loginController/login",
+        final_resp = self._request_json(
+            "POST",
+            "/api/user/loginController/login",
             json=login_payload,
             timeout=15,
-        ).json()
+        )
 
         if not final_resp.get("success"):
             raise RuntimeError(f"动态码验证未通过: {final_resp.get('msg', final_resp)}")

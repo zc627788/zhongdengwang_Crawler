@@ -327,12 +327,30 @@ class GuarantorQueryScraper:
 
         self.access_token: str = ""
         self.user_info: dict = {}
+        self.log_dir = auth_client.config_dir.parent / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+    def _log_file_only(self, msg: str):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_file = self.log_dir / f"zhongdeng_{time.strftime('%Y%m%d')}.log"
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] [DETAIL] {msg.lstrip()}\n")
+        except Exception:
+            pass
 
     def _log(self, msg: str):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_file = self.log_dir / f"zhongdeng_{time.strftime('%Y%m%d')}.log"
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {msg.lstrip()}\n")
+        except Exception:
+            pass
         if self._logger:
             self._logger(msg)
         else:
-            print(msg)
+            print(msg, flush=True)
 
     def _emit_company(self, **kwargs):
         if self._on_company_progress:
@@ -361,18 +379,60 @@ class GuarantorQueryScraper:
             "Referer": "https://www.zhongdengwang.org.cn/out/?",
         }
 
-    def _post_json(self, path: str, payload: dict, timeout: int = 25) -> dict:
-        self.controller.check()
-        resp = self.session.post(
-            f"{BASE_URL}{path}",
-            json=payload,
-            headers=self._headers(),
-            timeout=timeout,
-        )
-        res = resp.json()
-        if str(res.get("code")) == "403":
-            raise PermissionError(res.get("msg") or "会话令牌已过期")
-        return res
+    def _reset_pool(self):
+        """重建底层连接池并同步 session 引用，消除服务端主动断开长连接导致的 curl:(56) 报错"""
+        self.auth.reset_connection_pool()
+        self.session = self.auth.session
+
+    def _post_json(self, path: str, payload: dict, timeout: int = 25, max_retries: int = 3) -> dict:
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            self.controller.check()
+            try:
+                resp = self.session.post(
+                    f"{BASE_URL}{path}",
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=timeout,
+                )
+                res = resp.json()
+                if str(res.get("code")) == "403":
+                    raise PermissionError(res.get("msg") or "会话令牌已过期")
+                return res
+            except (PermissionError, TaskStoppedError):
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    self._reset_pool()
+                    self.controller.sleep(1.0 * attempt)
+                else:
+                    raise last_exc
+
+    def _post_form(self, path: str, data: dict, timeout: int = 15, max_retries: int = 3) -> dict:
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            self.controller.check()
+            try:
+                resp = self.session.post(
+                    f"{BASE_URL}{path}",
+                    data=data,
+                    headers=self._headers(),
+                    timeout=timeout,
+                )
+                res = resp.json()
+                if str(res.get("code")) == "403":
+                    raise PermissionError(res.get("msg") or "会话令牌已过期")
+                return res
+            except (PermissionError, TaskStoppedError):
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    self._reset_pool()
+                    self.controller.sleep(1.0 * attempt)
+                else:
+                    raise last_exc
 
     def _submit_search_form(
         self,
@@ -392,12 +452,11 @@ class GuarantorQueryScraper:
         # 对齐前端 /out/assets/index-1b48539b.js：动态检测当前账号是否具备历史数据查询权限 (hasDataTypeRight)
         has_data_type_right = "0"
         try:
-            sub_res = self.session.post(
-                f"{BASE_URL}/api/user/roleRight/userMenuQueryByParentId",
-                data={"nodeId": "out-004-001-000-000", "menuType": "0", "sysName": "对外用户系统"},
-                headers=self._headers(),
+            sub_res = self._post_form(
+                "/api/user/roleRight/userMenuQueryByParentId",
+                {"nodeId": "out-004-001-000-000", "menuType": "0", "sysName": "对外用户系统"},
                 timeout=10,
-            ).json()
+            )
             if sub_res.get("success") and sub_res.get("data"):
                 if (sub_res["data"][0] or {}).get("menuUrl") == "/query/guarantor/his":
                     has_data_type_right = "1"
@@ -409,12 +468,11 @@ class GuarantorQueryScraper:
         manual_fn = getattr(self.auth, "_manual_captcha_fn", None)
         for attempt in range(1, max_captcha_tries + 1):
             self.controller.check()
-            vc_resp = self.session.post(
-                f"{BASE_URL}/api/user/tool/verifyCode",
-                data={"type": "5", "token": q_token},
-                headers=self._headers(),
+            vc_resp = self._post_form(
+                "/api/user/tool/verifyCode",
+                {"type": "5", "token": q_token},
                 timeout=15,
-            ).json()
+            )
             if not vc_resp.get("success"):
                 raise RuntimeError(f"获取查询验证码失败: {vc_resp.get('msg', vc_resp)}")
 
@@ -474,7 +532,7 @@ class GuarantorQueryScraper:
         self,
         page_payload: dict,
         save_path: Path,
-        max_retries: int = 3,
+        max_retries: int = 6,
         allow_inherit: bool = True,
     ) -> List[str]:
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -491,6 +549,8 @@ class GuarantorQueryScraper:
 
         for retry in range(1, max_retries + 1):
             self.controller.check()
+            downloaded = 0
+            bin_resp = None
             try:
                 dl1 = self._post_json("/api/query/byDebtorName/downloadRegInfoPDFOnCurrentPage", page_payload, timeout=45)
                 if not dl1.get("success") or not (dl1.get("data") or {}).get("url"):
@@ -513,10 +573,17 @@ class GuarantorQueryScraper:
                 else:
                     real_url = hop1_url
 
+                # 票据生成后短暂缓冲 0.4s 再拉取二进制流
+                self.controller.sleep(0.4)
+                stream_headers = {
+                    **self._headers(),
+                    "Accept": "application/octet-stream,application/zip,*/*;q=0.8",
+                }
+
                 t0 = time.time()
                 bin_resp = self.session.get(
                     real_url,
-                    headers=self._headers(),
+                    headers=stream_headers,
                     stream=True,
                     timeout=600,
                 )
@@ -524,7 +591,6 @@ class GuarantorQueryScraper:
                     raise RuntimeError(f"文件流 HTTP 状态异常 ({bin_resp.status_code})")
 
                 total_bytes = int(bin_resp.headers.get("content-length") or 0)
-                downloaded = 0
                 last_print = 0.0
 
                 with open(temp_path, "wb") as f_out:
@@ -577,13 +643,21 @@ class GuarantorQueryScraper:
             except (PermissionError, TaskStoppedError):
                 raise
             except Exception as exc:
-                self._log(f"    ⚠️ 第 {retry}/{max_retries} 次下载压缩包异常: {exc}")
+                self._log_file_only(f"下载压缩包 {save_path.name} 第 {retry}/{max_retries} 次底层异常: {exc}")
+                self._reset_pool()
                 if retry < max_retries:
-                    wait_s = 3.0 * retry
-                    self._log(f"    ⏳ 等待 {wait_s:.0f}s 后自动重试该页下载...")
+                    wait_s = 2.0 if downloaded < 65536 else min(3.0 * retry, 12.0)
+                    self._log(f"    🔄 [下载重连 {retry}/{max_retries}] 服务端网关连接短暂重置，等待 {wait_s:.0f}s 后自动切换新连接续传...")
                     self.controller.sleep(wait_s)
                 else:
+                    self._log(f"    ❌ 压缩包 {save_path.name} 连续 {max_retries} 次下载失败: {exc}")
                     raise RuntimeError(f"压缩包 {save_path.name} 连续 {max_retries} 次下载失败: {exc}") from exc
+            finally:
+                if bin_resp is not None:
+                    try:
+                        bin_resp.close()
+                    except Exception:
+                        pass
         return []
 
     @staticmethod
