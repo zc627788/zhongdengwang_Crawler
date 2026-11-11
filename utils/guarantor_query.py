@@ -374,7 +374,13 @@ class GuarantorQueryScraper:
             raise PermissionError(res.get("msg") or "会话令牌已过期")
         return res
 
-    def _submit_search_form(self, org_name: str, query_reason: str = "01", max_captcha_tries: int = 6) -> dict:
+    def _submit_search_form(
+        self,
+        org_name: str,
+        query_reason: str = "01",
+        max_captcha_tries: int = 20,
+        manual_after: int = 12,
+    ) -> dict:
         tok_res = self._post_json("/api/user/tool/token", {"type": "5"})
         if not tok_res.get("success") or not tok_res.get("data", {}).get("token"):
             raise RuntimeError(f"获取查询 token 失败: {tok_res.get('msg', tok_res)}")
@@ -383,7 +389,24 @@ class GuarantorQueryScraper:
         user_cat = str(self.user_info.get("userCategory") or "20")
         user_status = str(self.user_info.get("userStatus") or "0")
 
+        # 对齐前端 /out/assets/index-1b48539b.js：动态检测当前账号是否具备历史数据查询权限 (hasDataTypeRight)
+        has_data_type_right = "0"
+        try:
+            sub_res = self.session.post(
+                f"{BASE_URL}/api/user/roleRight/userMenuQueryByParentId",
+                data={"nodeId": "out-004-001-000-000", "menuType": "0", "sysName": "对外用户系统"},
+                headers=self._headers(),
+                timeout=10,
+            ).json()
+            if sub_res.get("success") and sub_res.get("data"):
+                if (sub_res["data"][0] or {}).get("menuUrl") == "/query/guarantor/his":
+                    has_data_type_right = "1"
+        except Exception:
+            pass
+
         last_err_msg = ""
+        submit_count = 0
+        manual_fn = getattr(self.auth, "_manual_captcha_fn", None)
         for attempt in range(1, max_captcha_tries + 1):
             self.controller.check()
             vc_resp = self.session.post(
@@ -399,25 +422,37 @@ class GuarantorQueryScraper:
             img_bytes = self.auth.solver.save_base64_image(vc_resp["data"]["url"], captcha_path)
             ans, clean_tips, mode = self.auth.solver.try_auto_solve(img_bytes, vc_resp["data"].get("tips", ""))
 
+            # 自动识别多次仍失败时，GUI 模式下弹窗请用户人工输入
+            if attempt > manual_after and manual_fn:
+                self._log(f"    🙋 [查询校验码 {attempt}/{max_captcha_tries}] 自动识别多次未通过，请在弹窗中人工输入")
+                ans = (manual_fn(captcha_path, clean_tips) or "").strip()
+                mode = "manual"
+                if not ans:
+                    raise RuntimeError("用户取消了查询校验码人工输入")
+
             if not ans:
-                self._log(f"    🔄 [查询校验码 {attempt}/{max_captcha_tries}] 模式={mode} 置信度不足，换一张...")
-                self.controller.sleep(0.8)
+                self._log(f"    🔄 [查询校验码 {attempt}/{max_captcha_tries}] 识别置信度不足，换一张 ({mode})")
+                self.controller.sleep(0.6)
                 continue
 
-            self._log(f"    🤖 [查询校验码 {attempt}/{max_captcha_tries}] 模式={mode} | '{clean_tips}' -> {ans}")
+            submit_count += 1
+            self._log(f"    🤖 [查询校验码 {attempt}/{max_captcha_tries}] '{clean_tips}' -> {ans}")
+            effective_reason = "14" if user_cat == "14" else query_reason
             form_payload = {
                 "debtorType": "0",
                 "queryConfirmationAgeUUID": "",
-                "hasDataTypeRight": "0",
+                "hasDataTypeRight": has_data_type_right,
                 "dataType": "0",
                 "userCategory": user_cat,
                 "userStatus": user_status,
                 "queryConfirmationNeed": "0",
                 "token": q_token,
                 "orgName": org_name,
-                "queryReason": query_reason,
+                "queryReason": effective_reason,
                 "verifyCode": ans,
             }
+            if user_cat == "14":
+                form_payload["otherQueryReason"] = "依法履职查询"
             val_res = self._post_json("/api/query/byDebtorName/formValidate", form_payload)
             if val_res.get("success"):
                 val_data = val_res.get("data") or {}
@@ -433,7 +468,7 @@ class GuarantorQueryScraper:
                 raise RuntimeError(f"表单校验拒绝: {last_err_msg}")
             self.controller.sleep(1.0)
 
-        raise RuntimeError(f"连续 {max_captcha_tries} 次查询验证码未通过 (最后提示: {last_err_msg})")
+        raise RuntimeError(f"连续 {max_captcha_tries} 张查询验证码未通过 (提交 {submit_count} 次, 最后提示: {last_err_msg})")
 
     def _download_page_zip(
         self,

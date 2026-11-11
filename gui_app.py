@@ -965,9 +965,35 @@ def run_self_test() -> int:
     parsed = parse_target_list("机构名称\nTCL华星光电技术有限公司, 珠海格力电器股份有限公司，美的集团股份有限公司\nTCL华星光电技术有限公司")
     assert parsed == ["TCL华星光电技术有限公司", "珠海格力电器股份有限公司", "美的集团股份有限公司"], f"Unexpected: {parsed}"
 
-    # 3. 验证码 ONNX 引擎与 TLS 客户端加载校验
+    # 3. 验证码双 ONNX 引擎 (std + beta) 与线上真值过码校验
     auth = ZhongdengAuthClient(cfg_dir)
-    assert auth.solver is not None
+    assert auth.solver is not None and auth.solver._ocr_beta is not None
+    live_captcha_ok = False
+    live_captcha_detail = ""
+    tmp_cap = cfg_dir / "_selftest_cap.png"
+    for attempt in range(1, 7):
+        tok = auth._get_login_token()
+        img_bytes, tips = auth._fetch_verify_code(tok)
+        ans, clean_tips, mode = auth.solver.try_auto_solve(img_bytes, tips)
+        if not ans:
+            continue
+        res = auth.session.post(
+            "https://www.zhongdengwang.org.cn/api/user/loginController/loginCheck",
+            json={**digests, "token": tok, "type": "4", "userCode": "zz_selftest_nouser_99", "verifyCode": ans},
+            timeout=15,
+        ).json()
+        msg = res.get("msg", "")
+        if "校验码" not in msg:
+            live_captcha_ok = True
+            live_captcha_detail = f"attempt={attempt}, mode={mode}, tips={clean_tips}, ans={ans}, server_msg={msg}"
+            break
+    for f in (tmp_cap, auth.captcha_file):
+        if f.exists():
+            try:
+                f.unlink()
+            except Exception:
+                pass
+    assert live_captcha_ok, "Frozen EXE 线上验证码实测未通过"
 
     # 4. 控制器暂停/继续/中断与内容不变断点继承闭环校验
     ctrl = TaskController()
@@ -1011,6 +1037,8 @@ def run_self_test() -> int:
         "frozen": bool(getattr(sys, "frozen", False)),
         "executable": sys.executable,
         "app_root": str(app_root),
+        "live_captcha_verified": live_captcha_ok,
+        "live_captcha_detail": live_captcha_detail,
         "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     (cfg_dir / "_selftest_result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
